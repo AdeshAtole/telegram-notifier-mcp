@@ -3,8 +3,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFile, stat } from "node:fs/promises";
-import { basename } from "node:path";
+import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -24,6 +25,27 @@ if (!TELEGRAM_BOT_TOKEN) {
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
+// Persist the getUpdates offset to disk so we don't re-fetch old messages after restart
+const OFFSET_DIR = join(homedir(), ".telegram-notifier-mcp");
+const OFFSET_FILE = join(OFFSET_DIR, "update-offset");
+
+let updateOffset = 0;
+
+async function loadOffset(): Promise<void> {
+  try {
+    const data = await readFile(OFFSET_FILE, "utf-8");
+    const parsed = parseInt(data.trim(), 10);
+    if (!isNaN(parsed)) updateOffset = parsed;
+  } catch {
+    // File doesn't exist yet — start from 0
+  }
+}
+
+async function saveOffset(): Promise<void> {
+  await mkdir(OFFSET_DIR, { recursive: true });
+  await writeFile(OFFSET_FILE, String(updateOffset), "utf-8");
+}
+
 // ---------------------------------------------------------------------------
 // Telegram Client
 // ---------------------------------------------------------------------------
@@ -32,6 +54,65 @@ interface TelegramResponse {
   ok: boolean;
   description?: string;
   result?: unknown;
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    message_id: number;
+    from?: { id: number; first_name: string; username?: string };
+    chat: { id: number; type: string; title?: string };
+    date: number;
+    text?: string;
+    caption?: string;
+    photo?: unknown[];
+    document?: { file_name?: string };
+    video?: { file_name?: string };
+    audio?: { file_name?: string };
+  };
+}
+
+interface GetUpdatesResponse {
+  ok: boolean;
+  description?: string;
+  result?: TelegramUpdate[];
+}
+
+async function getUpdates(
+  limit: number,
+  timeout: number,
+): Promise<GetUpdatesResponse> {
+  const params = new URLSearchParams({
+    offset: String(updateOffset),
+    limit: String(limit),
+    timeout: String(timeout),
+    allowed_updates: JSON.stringify(["message"]),
+  });
+
+  const res = await fetch(`${TELEGRAM_API}/getUpdates?${params}`, {
+    method: "GET",
+    signal: AbortSignal.timeout((timeout + 5) * 1000),
+  });
+
+  return (await res.json()) as GetUpdatesResponse;
+}
+
+function formatUpdate(update: TelegramUpdate): string {
+  const msg = update.message;
+  if (!msg) return `[Update ${update.update_id}] (no message)`;
+
+  const from = msg.from
+    ? `${msg.from.first_name}${msg.from.username ? ` (@${msg.from.username})` : ""}`
+    : "Unknown";
+  const date = new Date(msg.date * 1000).toISOString();
+
+  let content = msg.text ?? "";
+  if (msg.photo) content = `[Photo]${msg.caption ? ` ${msg.caption}` : ""}`;
+  if (msg.document) content = `[Document: ${msg.document.file_name ?? "unknown"}]${msg.caption ? ` ${msg.caption}` : ""}`;
+  if (msg.video) content = `[Video: ${msg.video.file_name ?? "unknown"}]${msg.caption ? ` ${msg.caption}` : ""}`;
+  if (msg.audio) content = `[Audio: ${msg.audio.file_name ?? "unknown"}]${msg.caption ? ` ${msg.caption}` : ""}`;
+
+  return `[${date}] ${from} (chat ${msg.chat.id}): ${content}`;
 }
 
 async function sendMessage(
@@ -331,11 +412,67 @@ server.tool(
   },
 );
 
+// -- get_updates ------------------------------------------------------------
+
+server.tool(
+  "get_updates",
+  "Check for new messages sent to the bot. Returns only new messages since the last check.",
+  {
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Max number of messages to retrieve (1-100, default 10)"),
+    timeout: z
+      .number()
+      .int()
+      .min(0)
+      .max(30)
+      .optional()
+      .describe("Long-polling timeout in seconds (0-30, default 0). Set >0 to wait for new messages."),
+  },
+  async ({ limit, timeout }) => {
+    const effectiveLimit = limit ?? 10;
+    const effectiveTimeout = timeout ?? 0;
+
+    let res: GetUpdatesResponse;
+    try {
+      res = await getUpdates(effectiveLimit, effectiveTimeout);
+    } catch (err) {
+      return errorResult(
+        `Failed to fetch updates: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (!res.ok) {
+      return errorResult(`Telegram API error: ${res.description ?? "Unknown error"}`);
+    }
+
+    const updates = res.result ?? [];
+
+    // Advance the offset and persist so we survive restarts
+    if (updates.length > 0) {
+      updateOffset = updates[updates.length - 1].update_id + 1;
+      await saveOffset();
+    }
+
+    if (updates.length === 0) {
+      return successResult("No new messages.");
+    }
+
+    const formatted = updates.map(formatUpdate).join("\n");
+    return successResult(`${updates.length} new message(s):\n\n${formatted}`);
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 
 async function main() {
+  await loadOffset();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Telegram Notifier MCP server running on stdio");

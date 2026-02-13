@@ -1,6 +1,6 @@
 # Telegram Notifier MCP Server
 
-A one-way notification [MCP](https://modelcontextprotocol.io/) server that lets an LLM send messages and files to a user via a Telegram bot. No external HTTP or Telegram libraries — just the native `fetch` API and the official MCP SDK.
+An [MCP](https://modelcontextprotocol.io/) server that lets an LLM send messages and files to a user via a Telegram bot, and read incoming messages. No external HTTP or Telegram libraries — just the native `fetch` API and the official MCP SDK.
 
 ## Quick Start
 
@@ -139,6 +139,15 @@ Send an audio file to a Telegram chat.
 | `caption` | string | No | Caption for the audio |
 | `parseMode` | string | No | `Markdown`, `MarkdownV2`, or `HTML` |
 | `disableNotification` | boolean | No | Send silently without notification sound |
+
+### `get_updates`
+
+Check for new messages sent to the bot. Only returns messages received since the last check.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `limit` | number | No | Max messages to retrieve (1-100, default 10) |
+| `timeout` | number | No | Long-polling timeout in seconds (0-30, default 0). Set >0 to wait for new messages. |
 
 ## Testing with the MCP Inspector
 
