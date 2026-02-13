@@ -83,9 +83,10 @@ interface GetUpdatesResponse {
 async function getUpdates(
   limit: number,
   timeout: number,
+  offsetOverride?: number,
 ): Promise<GetUpdatesResponse> {
   const params = new URLSearchParams({
-    offset: String(updateOffset),
+    offset: String(offsetOverride ?? updateOffset),
     limit: String(limit),
     timeout: String(timeout),
     allowed_updates: JSON.stringify(["message"]),
@@ -514,14 +515,25 @@ server.tool(
       .max(30)
       .optional()
       .describe("Long-polling timeout in seconds (0-30, default 0). Set >0 to wait for new messages."),
+    previous: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Re-fetch the last N already-read messages. Does not advance the offset."),
   },
-  async ({ limit, timeout }) => {
-    const effectiveLimit = limit ?? 10;
-    const effectiveTimeout = timeout ?? 0;
+  async ({ limit, timeout, previous }) => {
+    const isPeeking = previous != null;
+    const effectiveLimit = isPeeking ? previous : (limit ?? 10);
+    const effectiveTimeout = isPeeking ? 0 : (timeout ?? 0);
+    const offsetOverride = isPeeking
+      ? Math.max(0, updateOffset - previous)
+      : undefined;
 
     let res: GetUpdatesResponse;
     try {
-      res = await getUpdates(effectiveLimit, effectiveTimeout);
+      res = await getUpdates(effectiveLimit, effectiveTimeout, offsetOverride);
     } catch (err) {
       return errorResult(
         `Failed to fetch updates: ${err instanceof Error ? err.message : String(err)}`,
@@ -534,18 +546,19 @@ server.tool(
 
     const updates = res.result ?? [];
 
-    // Advance the offset and persist so we survive restarts
-    if (updates.length > 0) {
+    // Only advance the offset for normal reads, not peeks
+    if (!isPeeking && updates.length > 0) {
       updateOffset = updates[updates.length - 1].update_id + 1;
       await saveOffset();
     }
 
     if (updates.length === 0) {
-      return successResult("No new messages.");
+      return successResult(isPeeking ? "No previous messages found." : "No new messages.");
     }
 
+    const label = isPeeking ? "previous" : "new";
     const formatted = (await Promise.all(updates.map(formatUpdate))).join("\n");
-    return successResult(`${updates.length} new message(s):\n\n${formatted}`);
+    return successResult(`${updates.length} ${label} message(s):\n\n${formatted}`);
   },
 );
 
