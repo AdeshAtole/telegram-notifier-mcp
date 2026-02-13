@@ -65,10 +65,12 @@ interface TelegramUpdate {
     date: number;
     text?: string;
     caption?: string;
-    photo?: unknown[];
-    document?: { file_name?: string };
-    video?: { file_name?: string };
-    audio?: { file_name?: string };
+    photo?: Array<{ file_id: string; width: number; height: number }>;
+    document?: { file_id: string; file_name?: string };
+    video?: { file_id: string; file_name?: string };
+    audio?: { file_id: string; file_name?: string };
+    voice?: { file_id: string; duration: number };
+    sticker?: { file_id: string; emoji?: string };
   };
 }
 
@@ -97,7 +99,42 @@ async function getUpdates(
   return (await res.json()) as GetUpdatesResponse;
 }
 
-function formatUpdate(update: TelegramUpdate): string {
+const DOWNLOAD_DIR = join(homedir(), ".telegram-notifier-mcp", "downloads");
+const TELEGRAM_FILE_API = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}`;
+
+async function downloadFile(
+  fileId: string,
+  fallbackName: string,
+): Promise<string> {
+  const fileRes = await fetch(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
+  const fileData = (await fileRes.json()) as TelegramResponse & {
+    result?: { file_path?: string };
+  };
+
+  if (!fileData.ok || !fileData.result?.file_path) {
+    throw new Error(fileData.description ?? "Failed to get file path");
+  }
+
+  const remotePath = fileData.result.file_path;
+  const ext = remotePath.includes(".")
+    ? "." + remotePath.split(".").pop()
+    : "";
+  const fileName = `${Date.now()}-${fallbackName}${fallbackName.includes(".") ? "" : ext}`;
+
+  await mkdir(DOWNLOAD_DIR, { recursive: true });
+  const localPath = join(DOWNLOAD_DIR, fileName);
+
+  const downloadRes = await fetch(`${TELEGRAM_FILE_API}/${remotePath}`);
+  if (!downloadRes.ok) {
+    throw new Error(`Download failed: ${downloadRes.status}`);
+  }
+
+  const buffer = Buffer.from(await downloadRes.arrayBuffer());
+  await writeFile(localPath, buffer);
+  return localPath;
+}
+
+async function formatUpdate(update: TelegramUpdate): Promise<string> {
   const msg = update.message;
   if (!msg) return `[Update ${update.update_id}] (no message)`;
 
@@ -107,10 +144,55 @@ function formatUpdate(update: TelegramUpdate): string {
   const date = new Date(msg.date * 1000).toISOString();
 
   let content = msg.text ?? "";
-  if (msg.photo) content = `[Photo]${msg.caption ? ` ${msg.caption}` : ""}`;
-  if (msg.document) content = `[Document: ${msg.document.file_name ?? "unknown"}]${msg.caption ? ` ${msg.caption}` : ""}`;
-  if (msg.video) content = `[Video: ${msg.video.file_name ?? "unknown"}]${msg.caption ? ` ${msg.caption}` : ""}`;
-  if (msg.audio) content = `[Audio: ${msg.audio.file_name ?? "unknown"}]${msg.caption ? ` ${msg.caption}` : ""}`;
+  const caption = msg.caption ? ` ${msg.caption}` : "";
+
+  if (msg.photo) {
+    const best = msg.photo[msg.photo.length - 1];
+    try {
+      const path = await downloadFile(best.file_id, "photo.jpg");
+      content = `[Photo downloaded to ${path}]${caption}`;
+    } catch {
+      content = `[Photo]${caption}`;
+    }
+  } else if (msg.document) {
+    const name = msg.document.file_name ?? "unknown";
+    try {
+      const path = await downloadFile(msg.document.file_id, name);
+      content = `[Document: ${name} downloaded to ${path}]${caption}`;
+    } catch {
+      content = `[Document: ${name}]${caption}`;
+    }
+  } else if (msg.video) {
+    const name = msg.video.file_name ?? "video.mp4";
+    try {
+      const path = await downloadFile(msg.video.file_id, name);
+      content = `[Video: ${name} downloaded to ${path}]${caption}`;
+    } catch {
+      content = `[Video: ${name}]${caption}`;
+    }
+  } else if (msg.audio) {
+    const name = msg.audio.file_name ?? "audio.mp3";
+    try {
+      const path = await downloadFile(msg.audio.file_id, name);
+      content = `[Audio: ${name} downloaded to ${path}]${caption}`;
+    } catch {
+      content = `[Audio: ${name}]${caption}`;
+    }
+  } else if (msg.voice) {
+    try {
+      const path = await downloadFile(msg.voice.file_id, "voice.ogg");
+      content = `[Voice message (${msg.voice.duration}s) downloaded to ${path}]`;
+    } catch {
+      content = `[Voice message (${msg.voice.duration}s)]`;
+    }
+  } else if (msg.sticker) {
+    try {
+      const path = await downloadFile(msg.sticker.file_id, "sticker.webp");
+      content = `[Sticker${msg.sticker.emoji ? ` ${msg.sticker.emoji}` : ""} downloaded to ${path}]`;
+    } catch {
+      content = `[Sticker${msg.sticker.emoji ? ` ${msg.sticker.emoji}` : ""}]`;
+    }
+  }
 
   return `[${date}] ${from} (chat ${msg.chat.id}): ${content}`;
 }
@@ -462,7 +544,7 @@ server.tool(
       return successResult("No new messages.");
     }
 
-    const formatted = updates.map(formatUpdate).join("\n");
+    const formatted = (await Promise.all(updates.map(formatUpdate))).join("\n");
     return successResult(`${updates.length} new message(s):\n\n${formatted}`);
   },
 );

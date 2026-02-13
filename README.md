@@ -149,6 +149,15 @@ Check for new messages sent to the bot. Only returns messages received since the
 | `limit` | number | No | Max messages to retrieve (1-100, default 10) |
 | `timeout` | number | No | Long-polling timeout in seconds (0-30, default 0). Set >0 to wait for new messages. |
 
+#### File Downloads
+
+When a message contains media (photo, document, video, audio, voice message, or sticker), the server automatically downloads the file to `~/.telegram-notifier-mcp/downloads/` and includes the local path in the output. This lets the LLM read or process the file directly.
+
+- Files are saved as `<timestamp>-<original_filename>` to avoid collisions
+- Photos are downloaded at the highest available resolution
+- Telegram Bot API limits downloads to **20 MB**
+- If a download fails, the output falls back to just labeling the media type
+
 ## Testing with the MCP Inspector
 
 You can test the server interactively using the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
@@ -189,6 +198,15 @@ npm run build
 # Watch mode — rebuilds on file changes
 npm run dev
 ```
+
+## Publishing
+
+Releases are published to npm automatically via GitHub Actions when you create a GitHub release.
+
+**Setup:**
+1. Add your npm token as a repository secret named `NPM_TOKEN` in GitHub Settings > Secrets and variables > Actions
+2. Bump the version in `package.json`
+3. Create a new GitHub release — the workflow will build and publish to npm
 
 ## License
 
