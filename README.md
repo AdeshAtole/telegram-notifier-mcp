@@ -66,6 +66,31 @@ Add to your project's `.mcp.json` or `~/.claude.json`:
 }
 ```
 
+#### Codex CLI
+
+You can configure Codex CLI in either of these ways:
+
+**Option A: Add it manually in `~/.codex/config.toml`**
+
+```toml
+[mcp_servers.telegram-notifier]
+command = "npx"
+args = ["telegram-notifier-mcp"]
+
+[mcp_servers.telegram-notifier.env]
+TELEGRAM_BOT_TOKEN = "your-bot-token-here"
+TELEGRAM_CHAT_ID = "your-chat-id-here"
+```
+
+**Option B: Add it with a CLI command**
+
+```bash
+codex mcp add telegram-notifier \
+  --env TELEGRAM_BOT_TOKEN=your-bot-token-here \
+  --env TELEGRAM_CHAT_ID=your-chat-id-here \
+  -- npx telegram-notifier-mcp
+```
+
 That's it — your LLM can now send you Telegram notifications.
 
 ## Configuration
